@@ -1,7 +1,7 @@
 // 常驻翻译服务：维持一个 agy 进程（stream-json 双向模式），通过本机 HTTP 接收翻译请求。
 // 这样 agy 的启动和账号检查（约 3~5 秒）只在服务启动时做一次，之后每条翻译只剩模型生成的时间。
 //
-// 用法：node agy-server.js <port> <model> <token> <父进程 PID>
+// 用法：node agy-server.js <port> <model> <token> <父进程 PID> [每个对话最多条数] [单条超时毫秒]
 // 接口：POST /translate?to=zh|en   请求头 X-Token: <token>   请求体：原文（UTF-8）
 //       返回 200 + 译文（text/plain; charset=utf-8），出错返回 500 + 错误信息
 "use strict";
@@ -12,14 +12,14 @@ const path = require("path");
 const { spawn } = require("child_process");
 
 const [PORT, MODEL, TOKEN, PARENT_PID] = [Number(process.argv[2]), process.argv[3], process.argv[4], Number(process.argv[5])];
+const MAX_TURNS = Number(process.argv[6]) || 30;            // 同一个对话最多翻译这么多条，之后换新对话，避免历史越积越长
+const TURN_TIMEOUT_MS = Number(process.argv[7]) || 45000;   // 单条翻译超过这个时间就判定失败
 const AGY = path.join(process.env.LOCALAPPDATA, "agy", "bin", "agy.exe");
 const WORK_DIR = path.join(__dirname, "workspace");
 // 最简翻译 agent（workspace/.agents/agents/translator/agent.md）：不带工具，翻译规则写在它的系统提示里。
 // 比默认 agent 每条少发约 80% 的 token（约 2.3k 对 12k），速度更稳定
 const AGENT = "translator";
 const LOG_FILE = path.join(os.tmpdir(), "gemini-translate", "agy-server.log");
-const MAX_TURNS = 30;            // 同一个对话最多翻译这么多条，之后换新对话，避免历史越积越长
-const TURN_TIMEOUT_MS = 45000;   // 单条翻译超过这个时间就判定失败
 
 fs.mkdirSync(WORK_DIR, { recursive: true });
 fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
@@ -172,7 +172,8 @@ server.on("error", (e) => {
     process.exit(1);
   }
 });
-server.listen(PORT, "127.0.0.1", () => log(`listening on 127.0.0.1:${PORT}, model=${MODEL}`));
+server.listen(PORT, "127.0.0.1", () =>
+  log(`listening on 127.0.0.1:${PORT}, model=${MODEL}, maxTurns=${MAX_TURNS}, turnTimeout=${TURN_TIMEOUT_MS}ms`));
 
 // AHK 脚本退出（包括崩溃）后，服务和 agy 一起退出
 setInterval(() => {

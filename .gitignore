@@ -1,3 +1,6 @@
+# 个人设置，由设置窗口生成
+config.ini
+
 # agy 的工作目录，运行时由 agy-server.js 自动创建；只保留里面的 agent 定义
 workspace/*
 !workspace/.agents/

@@ -2,19 +2,26 @@
 #SingleInstance Force
 Persistent
 
-; ================= 配置 =================
-TRANSLATE_HOTKEY := "!q"                    ; Alt+Q：翻译选中的文字
-MODEL            := "gemini-3.8-flash-low"  ; Antigravity CLI 使用的模型（agy models 可查看全部）
-SERVER_PORT      := 48721                   ; 本机翻译服务的端口
-TIMEOUT_MS       := 60000                   ; 超过这个时间就放弃
-POPUP_WIDTH      := 440                     ; 弹窗文字区宽度（按 96 DPI 计，会随系统缩放）
-FONT_NAME        := "Microsoft YaHei UI"
-; ========================================
+NODE_EXE    := "C:\Program Files\nodejs\node.exe"
+AGY_EXE     := EnvGet("LOCALAPPDATA") "\agy\bin\agy.exe"
+SERVER_JS   := A_ScriptDir "\agy-server.js"
+WORK_DIR    := A_ScriptDir "\workspace"   ; Antigravity CLI 的工作目录
+CONFIG_FILE := A_ScriptDir "\config.ini"  ; 个人设置，在托盘菜单“设置…”里修改
+AGENT_FILE  := WORK_DIR "\.agents\agents\translator\agent.md"
 
-NODE_EXE  := "C:\Program Files\nodejs\node.exe"
-AGY_EXE   := EnvGet("LOCALAPPDATA") "\agy\bin\agy.exe"
-SERVER_JS := A_ScriptDir "\agy-server.js"
-WORK_DIR  := A_ScriptDir "\workspace"   ; 空目录，Antigravity CLI 在这里运行
+#Include lib\config.ahk
+#Include lib\settings.ahk
+#Include lib\selbutton.ahk
+
+Cfg := LoadConfig()
+TRANSLATE_HOTKEY := Cfg["Hotkey"]
+MODEL            := Cfg["Model"]
+SERVER_PORT      := Cfg["Port"]
+TIMEOUT_MS       := Cfg["TimeoutSec"] * 1000
+POPUP_WIDTH      := Cfg["PopupWidth"]   ; 弹窗文字区宽度（按 96 DPI 计，会随系统缩放）
+FONT_NAME        := Cfg["FontName"]
+FONT_SIZE        := Cfg["FontSize"]
+
 SCALE     := A_ScreenDPI / 96
 TEXT_W    := Round(POPUP_WIDTH * SCALE)
 TOKEN     := Format("{:08x}{:08x}", Random(0, 0x7FFFFFFF), Random(0, 0x7FFFFFFF))  ; 只有本脚本能调用翻译服务
@@ -40,24 +47,35 @@ IsAppContainer() {
 DirCreate(WORK_DIR)
 
 global ServerPid := 0
-StartServer()   ; 脚本一启动就让翻译服务预热，第一次按 Alt+Q 也不用等 agy 启动
+StartServer()   ; 脚本一启动就让翻译服务预热，第一次翻译也不用等 agy 启动
 OnExit((*) => StopServer())
 
 CoordMode("Mouse", "Screen")
-A_IconTip := "Gemini 划词翻译（Alt+Q）"
-Hotkey(TRANSLATE_HOTKEY, (*) => TranslateSelection())
+try Hotkey(TRANSLATE_HOTKEY, (*) => TranslateSelection())
+catch {
+    MsgBox("快捷键“" HotkeyToText(TRANSLATE_HOTKEY) "”无法使用，已临时改用 Alt+Q。可以在托盘菜单“设置…”里重新设置。", "Gemini 划词翻译", "Icon!")
+    TRANSLATE_HOTKEY := DEFAULTS["Hotkey"]
+    Hotkey(TRANSLATE_HOTKEY, (*) => TranslateSelection())
+}
+A_IconTip := "Gemini 划词翻译（" HotkeyToText(TRANSLATE_HOTKEY) "）"
+A_TrayMenu.Insert("1&", "设置…", ShowSettings)
+A_TrayMenu.Insert("2&")
+A_TrayMenu.Default := "设置…"  ; 双击托盘图标也打开设置
 OnMessage(0x0006, OnActivate)  ; WM_ACTIVATE：弹窗失去焦点时关闭
 
 global Job := 0
 global Anchor := {x: 0, y: 0}
 global Popup, PopupEdit, PopupStatus, PopupCopy
 CreatePopup()
+if Cfg["SelectionButton"]
+    InitSelectionButton()
 
 ; ---------------- 翻译服务（agy-server.js）----------------
 
 StartServer() {
     global ServerPid
-    cmd := Format('"{1}" "{2}" {3} {4} {5} {6}', NODE_EXE, SERVER_JS, SERVER_PORT, MODEL, TOKEN, ProcessExist())
+    cmd := Format('"{1}" "{2}" {3} {4} {5} {6} {7} {8}', NODE_EXE, SERVER_JS, SERVER_PORT, MODEL, TOKEN, ProcessExist()
+        , Cfg["MaxTurns"], Cfg["TurnTimeoutSec"] * 1000)
     Run(cmd, A_ScriptDir, "Hide", &pid)
     ServerPid := pid
 }
@@ -77,15 +95,21 @@ StopServer() {
 
 ; ---------------- 取词 ----------------
 
+; 快捷键触发：弹窗出现在鼠标位置
 TranslateSelection() {
     global Anchor
     MouseGetPos(&mx, &my)
     Anchor := {x: mx, y: my}
     KeyWait("Alt", "T1")
-    text := GetSelectedText()
-    Log("hotkey: copied " StrLen(text) " chars")
+    TranslateText(GetSelectedText())
+}
+
+; 快捷键和划词按钮共用
+TranslateText(text) {
+    HideSelButton()
+    Log("translate: copied " StrLen(text) " chars")
     if (text = "") {
-        ShowPopup("没有获取到选中的文字。先选中文字，再按 Alt+Q。", "", false)
+        ShowPopup("没有获取到选中的文字。先选中文字，再按 " HotkeyToText(TRANSLATE_HOTKEY) "，或者点“译”按钮。", "", false)
         return
     }
     StartJob(text)
@@ -182,12 +206,12 @@ CreatePopup() {
     Popup.BackColor := "FFFFFF"
     Popup.MarginX := Round(12 * SCALE)
     Popup.MarginY := Round(10 * SCALE)
-    Popup.SetFont("s10 c202020", FONT_NAME)
+    Popup.SetFont("s" FONT_SIZE " c202020", FONT_NAME)
     PopupEdit := Popup.Add("Edit", "xm ym w" TEXT_W " r1 ReadOnly Multi -VScroll -E0x200 BackgroundFFFFFF")
-    Popup.SetFont("s8 c888888", FONT_NAME)
+    Popup.SetFont("s" Max(7, FONT_SIZE - 2) " c888888", FONT_NAME)
     copyW := Round(48 * SCALE)
     PopupStatus := Popup.Add("Text", "xm w" (TEXT_W - copyW), "")
-    Popup.SetFont("s8 c1a73e8", FONT_NAME)
+    Popup.SetFont("s" Max(7, FONT_SIZE - 2) " c1a73e8", FONT_NAME)
     PopupCopy := Popup.Add("Text", "x+0 yp w" copyW " Right +0x100", "复制")
     PopupCopy.OnEvent("Click", CopyResult)
     Popup.OnEvent("Escape", (*) => HidePopup("Esc"))
@@ -224,7 +248,7 @@ ShowPopup(text, status, canCopy) {
 
 MeasureHeight(text) {
     m := Gui("-DPIScale")
-    m.SetFont("s10", FONT_NAME)
+    m.SetFont("s" FONT_SIZE, FONT_NAME)  ; 必须和弹窗正文字体一致，否则算出的高度不对
     t := m.Add("Text", "w" TEXT_W, text)
     t.GetPos(, , , &h)
     m.Destroy()
