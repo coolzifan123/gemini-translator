@@ -1,5 +1,5 @@
 ; 设置窗口：托盘菜单“设置…”打开；保存后重启脚本，让新设置（包括后台服务）生效。
-; 依赖 config.ahk，以及调用方定义的 AGY_EXE、WORK_DIR。
+; 依赖 config.ahk，以及调用方定义的 AGY_EXE、WORK_DIR、TRANSLATE_HOTKEY。
 
 global SettingsGui := 0, S := {}, ModelJob := 0
 
@@ -21,7 +21,9 @@ OpenSettings(showOpts := "") {
         SettingsGui.Show()
         return
     }
-    Suspend(true)  ; 打开设置时暂停快捷键，否则在快捷键输入框里按 Alt+Q 会直接触发翻译
+    ; 打开设置时先关掉翻译快捷键，否则在快捷键输入框里按 Alt+Q 会直接触发翻译。
+    ; 不用 Suspend：它会把“译”按钮也一起停掉，设置窗口被别的窗口挡住时，看起来就像程序坏了
+    try Hotkey(TRANSLATE_HOTKEY, "Off")
     cfg := LoadConfig()
     g := Gui("-MinimizeBox", "Gemini 划词翻译 · 设置")
     g.SetFont("s9", "Microsoft YaHei UI")
@@ -217,7 +219,7 @@ CloseSettings(*) {
     }
     SettingsGui.Destroy()
     SettingsGui := 0
-    Suspend(false)
+    try Hotkey(TRANSLATE_HOTKEY, "On")
 }
 
 OpenPath(path) {
