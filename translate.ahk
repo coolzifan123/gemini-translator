@@ -100,6 +100,7 @@ TranslateSelection() {
     global Anchor
     MouseGetPos(&mx, &my)
     Anchor := {x: mx, y: my}
+    HideSelButton()  ; 先收起“译”按钮；下面取词会改剪贴板，不能让它当成自动复制又把按钮弹出来
     KeyWait("Alt", "T1")
     TranslateText(GetSelectedText())
 }
