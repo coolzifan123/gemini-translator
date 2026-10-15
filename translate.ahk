@@ -66,6 +66,7 @@ OnMessage(0x0006, OnActivate)  ; WM_ACTIVATE：弹窗失去焦点时关闭
 global Job := 0
 global Anchor := {x: 0, y: 0}
 global Popup, PopupEdit, PopupStatus, PopupCopy
+global PopupMoved := false   ; 用户拖动过弹窗：之后内容更新时留在原地，不再跳回选区旁边
 CreatePopup()
 if Cfg["SelectionButton"]
     InitSelectionButton()
@@ -216,9 +217,36 @@ CreatePopup() {
     PopupCopy := Popup.Add("Text", "x+0 yp w" copyW " Right +0x100", "复制")
     PopupCopy.OnEvent("Click", CopyResult)
     Popup.OnEvent("Escape", (*) => HidePopup("Esc"))
+    ; 按住空白边缘或底部状态栏可以拖动弹窗；译文区照常选字，“复制”照常点
+    OnMessage(0x0201, OnPopupMouseDown)   ; WM_LBUTTONDOWN
+    OnMessage(0x0020, OnPopupSetCursor)   ; WM_SETCURSOR
+    OnMessage(0x0231, OnPopupMoved)       ; WM_ENTERSIZEMOVE：开始拖动
+}
+
+; 点在空白处或状态栏上时，消息是发给弹窗本身的（状态栏文字不接收鼠标）；点在译文或“复制”上时是发给那个控件的
+OnPopupMouseDown(wParam, lParam, msg, hwnd) {
+    if (hwnd != Popup.Hwnd)
+        return
+    PostMessage(0x00A1, 2, DllCall("GetMessagePos", "UInt"), , Popup)  ; WM_NCLBUTTONDOWN + HTCAPTION：当成按住标题栏，交给 Windows 拖动
+    return 0
+}
+
+OnPopupSetCursor(wParam, lParam, msg, hwnd) {
+    if (wParam != Popup.Hwnd || (lParam & 0xFFFF) != 1)  ; 1 = HTCLIENT
+        return
+    DllCall("SetCursor", "Ptr", DllCall("LoadCursor", "Ptr", 0, "Ptr", 32646, "Ptr"))  ; IDC_SIZEALL：提示这里可以拖
+    return true
+}
+
+; 在开始拖的时候就记下，拖到一半翻译结果出来也不会把弹窗拉回去
+OnPopupMoved(wParam, lParam, msg, hwnd) {
+    global PopupMoved
+    if (hwnd = Popup.Hwnd)
+        PopupMoved := true
 }
 
 ShowPopup(text, status, canCopy) {
+    global PopupMoved
     pad := Round(6 * SCALE)
     lineH := MeasureHeight("国")
     h := MeasureHeight(text) + lineH // 2
@@ -237,10 +265,15 @@ ShowPopup(text, status, canCopy) {
     ; 已经显示着的弹窗不能先 Hide 再 Show：隐藏会让它失去焦点，触发“失焦关闭”把刚出来的结果关掉
     visible := DllCall("IsWindowVisible", "Ptr", Popup.Hwnd)
     Popup.Show(visible ? "AutoSize NoActivate" : "Hide AutoSize")
-    Popup.GetPos(, , &w, &h)
-    x := Anchor.x + Round(12 * SCALE)
-    y := Anchor.y + Round(18 * SCALE)
-    FitToMonitor(&x, &y, w, h)
+    Popup.GetPos(&x, &y, &w, &h)
+    if (visible && PopupMoved) {  ; 比如“翻译中…”时被拖开了，结果出来时留在原地
+        KeepOnScreen(&x, &y, w, h)
+    } else {
+        PopupMoved := false
+        x := Anchor.x + Round(12 * SCALE)
+        y := Anchor.y + Round(18 * SCALE)
+        FitToMonitor(&x, &y, w, h)
+    }
     Popup.Move(x, y)
     Popup.Show()
     WinActivate(Popup.Hwnd)
@@ -262,6 +295,19 @@ FitToMonitor(&x, &y, w, h) {
         if (Anchor.x >= l && Anchor.x < r && Anchor.y >= t && Anchor.y < b) {
             if (y + h > b)                      ; 下面放不下就放到鼠标上方
                 y := Anchor.y - h - Round(12 * SCALE)
+            x := Min(Max(x, l), r - w)
+            y := Min(Max(y, t), b - h)
+            return
+        }
+    }
+}
+
+; 拖动过的弹窗内容变长时，别让它超出所在的屏幕
+KeepOnScreen(&x, &y, w, h) {
+    cx := x + w // 2
+    loop MonitorGetCount() {
+        MonitorGetWorkArea(A_Index, &l, &t, &r, &b)
+        if (cx >= l && cx < r && y >= t && y < b) {
             x := Min(Max(x, l), r - w)
             y := Min(Max(y, t), b - h)
             return
